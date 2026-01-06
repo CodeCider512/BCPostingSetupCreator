@@ -4,20 +4,22 @@ import itertools
 from io import BytesIO
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="BC Posting Setup Pro", layout="wide")
+st.set_page_config(page_title="BC Implementation Toolkit", layout="wide")
 
-# --- SIDEBAR SETTINGS (User Friendly Options) ---
-st.sidebar.header("⚙️ Matrix Settings")
-include_blank = st.sidebar.checkbox("Include Blank Bus. Group", value=True)
-blank_desc_text = st.sidebar.text_input("Description for Blank Group", value="Standard")
-default_blocked = st.sidebar.checkbox("Default Blocked Status", value=False)
-default_lookup = st.sidebar.checkbox("View All Accounts on Lookup", value=True)
+# --- TOOL NAVIGATION ---
+st.sidebar.title("🛠️ BC Toolkit")
+tool_selection = st.sidebar.radio(
+    "Select Matrix Generator:",
+    ["General Posting Setup", "Inventory Posting Setup"]
+)
 
-st.title("📊 BC General Posting Setup Matrix")
-st.markdown("Generate a full Cartesian product of your Business and Product groups for Business Central.")
+st.sidebar.divider()
+st.sidebar.header("⚙️ Settings")
+include_blank = st.sidebar.checkbox("Include Blank Group/Location", value=True)
+blank_desc_text = st.sidebar.text_input("Description for Blank", value="Standard / All Locations")
 
-# --- DEFINING ALL COLUMNS ---
-STANDARD_COLUMNS = [
+# --- COLUMN DEFINITIONS ---
+GEN_POSTING_COLUMNS = [
     "Gen. Bus. Posting Group", "Gen. Prod. Posting Group", "Description",
     "Sales Account", "Sales Credit Memo Account", "Sales Line Disc. Account",
     "Sales Inv. Disc. Account", "Sales Pmt. Disc. Debit Acc.", "Sales Pmt. Disc. Credit Acc.",
@@ -28,95 +30,93 @@ STANDARD_COLUMNS = [
     "View All Accounts on Lookup", "Blocked"
 ]
 
-# --- FILE UPLOADERS ---
-col1, col2 = st.columns(2)
-with col1:
-    bus_file = st.file_uploader("1. Upload Gen. Bus. Groups (.xlsx)", type=['xlsx'])
-with col2:
-    prod_file = st.file_uploader("2. Upload Gen. Prod. Groups (.xlsx)", type=['xlsx'])
+INV_POSTING_COLUMNS = [
+    "Location Code", "Invt. Posting Group Code", "Description",
+    "View All Accounts on Lookup", "Inventory Account", "Inventory Account (Interim)",
+    "WIP Account", "Material Variance Account", "Capacity Variance Account",
+    "Subcontracted Variance Account", "Cap. Overhead Variance Account",
+    "Mfg. Overhead Variance Account", "Material Non-Inventory Variance Account"
+]
 
-if bus_file and prod_file:
-    try:
-        # Load Data
-        df_bus = pd.read_excel(bus_file)
-        df_prod = pd.read_excel(prod_file)
+# --- SHARED HELPER FUNCTIONS ---
+def generate_matrix(df_a, df_b, col_a_name, col_b_name, final_columns):
+    # Clean data
+    df_a['Code'] = df_a['Code'].astype(str).str.strip()
+    df_b['Code'] = df_b['Code'].astype(str).str.strip()
+    
+    codes_a = df_a['Code'].unique().tolist()
+    codes_b = df_b['Code'].unique().tolist()
+    
+    if include_blank:
+        codes_a.insert(0, "")
 
-        # Fool-proof Validation: Check for 'Code' column
-        if 'Code' not in df_bus.columns or 'Code' not in df_prod.columns:
-            st.error("❌ Error: Both files must have a column named 'Code'. Please check your BC exports.")
-            st.stop()
+    # Generate Combinations
+    combinations = list(itertools.product(codes_a, codes_b))
+    output_df = pd.DataFrame(combinations, columns=[col_a_name, col_b_name])
 
-        # Data Cleaning: Remove spaces and drop empty rows
-        df_bus['Code'] = df_bus['Code'].astype(str).str.strip()
-        df_prod['Code'] = df_prod['Code'].astype(str).str.strip()
-        df_bus = df_bus[df_bus['Code'] != 'nan']
-        df_prod = df_prod[df_prod['Code'] != 'nan']
+    # Merge Descriptions
+    output_df = output_df.merge(df_a[['Code', 'Description']], left_on=col_a_name, right_on='Code', how='left').rename(columns={'Description': 'Desc_A'})
+    output_df.loc[output_df[col_a_name] == "", 'Desc_A'] = blank_desc_text
+    output_df = output_df.merge(df_b[['Code', 'Description']], left_on=col_b_name, right_on='Code', how='left').rename(columns={'Description': 'Desc_B'})
+    
+    output_df['Description'] = output_df['Desc_A'].fillna('') + ' - ' + output_df['Desc_B'].fillna('')
 
-        bus_codes = df_bus['Code'].unique().tolist()
-        prod_codes = df_prod['Code'].unique().tolist()
-
-        if include_blank:
-            bus_codes.insert(0, "")
-
-        # Generate Cartesian Product
-        combinations = list(itertools.product(bus_codes, prod_codes))
-        output_df = pd.DataFrame(combinations, columns=['Gen. Bus. Posting Group', 'Gen. Prod. Posting Group'])
-
-        # Show Metrics for confidence
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Business Groups", len(bus_codes))
-        m2.metric("Product Groups", len(prod_codes))
-        m3.metric("Total Rows to Generate", len(output_df))
-
-        # Merge Descriptions
-        output_df = output_df.merge(
-            df_bus[['Code', 'Description']], 
-            left_on='Gen. Bus. Posting Group', 
-            right_on='Code', 
-            how='left'
-        ).rename(columns={'Description': 'Bus_Desc'})
+    # Format Columns
+    for col in final_columns:
+        if col not in output_df.columns:
+            output_df[col] = None
+    
+    output_df['View All Accounts on Lookup'] = True
+    if "Blocked" in final_columns:
+        output_df['Blocked'] = False
         
-        # Set description for blank group
-        output_df.loc[output_df['Gen. Bus. Posting Group'] == "", 'Bus_Desc'] = blank_desc_text
+    return output_df[final_columns]
 
-        output_df = output_df.merge(
-            df_prod[['Code', 'Description']], 
-            left_on='Gen. Prod. Posting Group', 
-            right_on='Code', 
-            how='left'
-        ).rename(columns={'Description': 'Prod_Desc'})
+# --- UI LOGIC ---
+if tool_selection == "General Posting Setup":
+    st.title("📊 General Posting Setup Generator")
+    col1, col2 = st.columns(2)
+    file_a = col1.file_uploader("Upload Gen. Bus. Groups", type=['xlsx'])
+    file_b = col2.file_uploader("Upload Gen. Prod. Groups", type=['xlsx'])
+    
+    col_a_title, col_b_title = "Gen. Bus. Posting Group", "Gen. Prod. Posting Group"
+    target_columns = GEN_POSTING_COLUMNS
 
-        output_df['Description'] = output_df['Bus_Desc'].fillna('') + ' - ' + output_df['Prod_Desc'].fillna('')
-
-        # Add all missing columns from the standard list
-        for col in STANDARD_COLUMNS:
-            if col not in output_df.columns:
-                output_df[col] = None
-
-        # Apply User Settings from Sidebar
-        output_df['View All Accounts on Lookup'] = default_lookup
-        output_df['Blocked'] = default_blocked
-
-        # Final reorder to match STANDARD_COLUMNS exactly
-        output_df = output_df[STANDARD_COLUMNS]
-
-        # --- PREVIEW & DOWNLOAD ---
-        st.divider()
-        st.subheader("Data Preview (First 15 rows)")
-        st.dataframe(output_df.head(15), use_container_width=True)
-
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            output_df.to_excel(writer, index=False, sheet_name='Gen. Posting Setup')
-        
-        st.download_button(
-            label="📥 Download Excel for Configuration Package",
-            data=buffer.getvalue(),
-            file_name="BC_General_Posting_Setup_Matrix.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    except Exception as e:
-        st.error(f"⚠️ An unexpected error occurred: {e}")
 else:
-    st.info("Upload the Excel files exported from Business Central to begin.")
+    st.title("📦 Inventory Posting Setup Generator")
+    col1, col2 = st.columns(2)
+    file_a = col1.file_uploader("Upload Locations", type=['xlsx'])
+    file_b = col2.file_uploader("Upload Inventory Posting Groups", type=['xlsx'])
+    
+    col_a_title, col_b_title = "Location Code", "Invt. Posting Group Code"
+    target_columns = INV_POSTING_COLUMNS
+
+# --- EXECUTION ---
+if file_a and file_b:
+    try:
+        df_a_in = pd.read_excel(file_a)
+        df_b_in = pd.read_excel(file_b)
+
+        if 'Code' not in df_a_in.columns or 'Code' not in df_b_in.columns:
+            st.error("❌ Error: Both files must have a 'Code' column.")
+        else:
+            final_df = generate_matrix(df_a_in, df_b_in, col_a_title, col_b_title, target_columns)
+            
+            st.divider()
+            st.metric("Total Rows Generated", len(final_df))
+            st.dataframe(final_df, use_container_width=True)
+
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                final_df.to_excel(writer, index=False)
+            
+            st.download_button(
+                label=f"📥 Download {tool_selection} Matrix",
+                data=buffer.getvalue(),
+                file_name=f"BC_{tool_selection.replace(' ', '_')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    except Exception as e:
+        st.error(f"Error: {e}")
+else:
+    st.info(f"Please upload the required files for {tool_selection}.")
